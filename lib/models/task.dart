@@ -1,3 +1,5 @@
+import 'package:clock/clock.dart';
+
 enum Priority { low, medium, high }
 
 class Task {
@@ -35,7 +37,7 @@ class Task {
     );
   }
 
-  bool get isOverdue => !isCompleted && dueDate.isBefore(DateTime.now());
+  bool get isOverdue => !isCompleted && dueDate.isBefore(clock.now());
 
   Map<String, dynamic> toJson() => {
     'id': id,

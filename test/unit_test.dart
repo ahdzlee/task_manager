@@ -1,12 +1,31 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:clock/clock.dart';
 import 'package:task_manager/models/task.dart';
 import 'package:task_manager/services/task_service.dart';
 
 void main() {
+  // ─── Named Constants for Testing ───────────────────────────────────
+  /// Future due date for testing pending tasks (reduces flakiness)
+  final defaultFutureDate = DateTime.now().add(const Duration(days: 7));
+  
+  /// Past due date for testing overdue scenarios
+  final pastDueDate = DateTime.now().subtract(const Duration(days: 3));
+  
+  /// Today's date for boundary testing
+  final todayDate = DateTime.now();
+  
+  const String testTitle = 'Buy groceries';
+  const String testId = 't1';
+  const String emptyString = '';
+  const String whitespaceString = '   ';
+
   // ─── Helper factory ───────────────────────────────────────────────
+  /// Factory function for creating test tasks with sensible defaults.
+  /// Reduces code duplication and makes tests more maintainable.
+  /// Supports partial overrides for focused test scenarios.
   Task makeTask({
-    String id = 't1',
-    String title = 'Buy groceries',
+    String id = testId,
+    String title = testTitle,
     Priority priority = Priority.medium,
     DateTime? dueDate,
     bool isCompleted = false,
@@ -15,13 +34,15 @@ void main() {
       id: id,
       title: title,
       priority: priority,
-      dueDate: dueDate ?? DateTime.now().add(const Duration(days: 7)),
+      dueDate: dueDate ?? defaultFutureDate,
       isCompleted: isCompleted,
     );
   }
 
   // ─────────────────────────────────────────────────────────────────
   // GROUP 1: Task Model — Constructor & Properties
+  // Tests: Default value initialization, field storage correctness
+  // Edge Cases: Verify immutability, type safety, valid state transitions
   // ─────────────────────────────────────────────────────────────────
   group('Task Model — Constructor & Properties', () {
     test('stores id and title correctly', () {
@@ -44,10 +65,24 @@ void main() {
       final task = makeTask(priority: Priority.high);
       expect(task.priority, equals(Priority.high));
     });
+    
+    /// Edge case: Verify all three priority levels work correctly
+    test('correctly stores all priority levels', () {
+      final lowTask = makeTask(priority: Priority.low);
+      final mediumTask = makeTask(priority: Priority.medium);
+      final highTask = makeTask(priority: Priority.high);
+      
+      expect(lowTask.priority, equals(Priority.low));
+      expect(mediumTask.priority, equals(Priority.medium));
+      expect(highTask.priority, equals(Priority.high));
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────
   // GROUP 2: Task Model — copyWith()
+  // Tests: Immutability guarantees, field-level updates, identity checks
+  // Edge Cases: Partial updates, null coalescing, nested data preservation
+  // Performance: copyWith() should create new instance, not modify original
   // ─────────────────────────────────────────────────────────────────
   group('Task Model — copyWith()', () {
     late Task original;
@@ -76,42 +111,117 @@ void main() {
       expect(updated.isCompleted, isTrue);
       expect(updated.priority, equals(Priority.high));
     });
+    
+    /// Advanced pattern: Verify copyWith returns a distinct object
+    /// This is critical for immutability patterns used in state management
+    test('creates a new Task instance (identity check)', () {
+      final updated = original.copyWith(title: 'Same');
+      expect(identical(updated, original), isFalse);
+    });
+    
+    /// Edge case: Updating with same values should still create new instance
+    test('creates new instance even when no changes provided', () {
+      final copy = original.copyWith();
+      expect(identical(copy, original), isFalse);
+      expect(copy.id, equals(original.id));
+      expect(copy.title, equals(original.title));
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────
   // GROUP 3: Task Model — isOverdue getter
+  // Tests: Overdue logic correctness, completion state interactions
+  // Edge Cases: Boundary dates (today, yesterday, tomorrow), timezone safety
+  // Business Logic: Completed tasks are never overdue regardless of date
+  // Production Pattern: Uses clock.now() injection to prevent flakiness
   // ─────────────────────────────────────────────────────────────────
-  group('Task Model — isOverdue getter', () {
+  group('Task Model — isOverdue getter (Time Injected)', () {
+    // We freeze time to exactly Jan 1, 2026, 12:00 PM for predictable testing
+    final fixedNow = DateTime(2026, 1, 1, 12, 0);
+
     test(
       'returns true when task is incomplete and due date is in the past',
       () {
-        final task = makeTask(
-          dueDate: DateTime.now().subtract(const Duration(days: 1)),
-          isCompleted: false,
-        );
-        expect(task.isOverdue, isTrue);
+        withClock(Clock.fixed(fixedNow), () {
+          final task = makeTask(
+            dueDate: fixedNow.subtract(const Duration(days: 1)),
+            isCompleted: false,
+          );
+          expect(task.isOverdue, isTrue);
+        });
       },
     );
 
     test('returns false when due date is in the future', () {
-      final task = makeTask(
-        dueDate: DateTime.now().add(const Duration(days: 5)),
-        isCompleted: false,
-      );
-      expect(task.isOverdue, isFalse);
+      withClock(Clock.fixed(fixedNow), () {
+        final task = makeTask(
+          dueDate: fixedNow.add(const Duration(days: 5)),
+          isCompleted: false,
+        );
+        expect(task.isOverdue, isFalse);
+      });
     });
 
     test('returns false when task is completed even if past due', () {
-      final task = makeTask(
-        dueDate: DateTime.now().subtract(const Duration(days: 3)),
-        isCompleted: true,
-      );
-      expect(task.isOverdue, isFalse);
+      withClock(Clock.fixed(fixedNow), () {
+        final task = makeTask(
+          dueDate: fixedNow.subtract(const Duration(days: 3)),
+          isCompleted: true,
+        );
+        expect(task.isOverdue, isFalse);
+      });
+    });
+    
+    /// Edge case: Boundary testing - task due far in future
+    /// Verify incomplete future task is never overdue
+    test('returns false when due date is far in future', () {
+      withClock(Clock.fixed(fixedNow), () {
+        final task = makeTask(
+          dueDate: fixedNow.add(const Duration(days: 365)),
+          isCompleted: false,
+        );
+        expect(task.isOverdue, isFalse);
+      });
+    });
+    
+    /// Advanced case: Recently completed tasks should not be overdue
+    test('returns false for recently completed overdue task', () {
+      withClock(Clock.fixed(fixedNow), () {
+        final task = makeTask(
+          dueDate: fixedNow.subtract(const Duration(days: 3)),
+          isCompleted: true, // Just completed
+        );
+        expect(task.isOverdue, isFalse);
+      });
+    });
+    
+    /// Advanced case: Extremely precise boundary condition testing
+    test('returns false exactly AT the due date millisecond', () {
+      withClock(Clock.fixed(fixedNow), () {
+        final task = makeTask(
+          dueDate: fixedNow,  // Due exactly right now
+          isCompleted: false,
+        );
+        expect(task.isOverdue, isFalse); // isBefore is strictly less-than
+      });
+    });
+    
+    test('returns true 1 millisecond past the due date', () {
+      withClock(Clock.fixed(fixedNow), () {
+        final task = makeTask(
+          dueDate: fixedNow.subtract(const Duration(milliseconds: 1)),
+          isCompleted: false,
+        );
+        expect(task.isOverdue, isTrue); 
+      });
     });
   });
 
   // ─────────────────────────────────────────────────────────────────
   // GROUP 4: Task Model — toJson() / fromJson()
+  // Tests: Serialization round-trip, type preservation, data integrity
+  // Edge Cases: All priority levels, boolean states, date precision
+  // Performance: JSON operations should preserve all data without loss
   // ─────────────────────────────────────────────────────────────────
   group('Task Model — toJson() / fromJson()', () {
     late Task task;
@@ -150,10 +260,34 @@ void main() {
         equals(task.dueDate.toIso8601String()),
       );
     });
+    
+    /// Advanced pattern: Verify JSON structure is correct
+    /// Ensures API compatibility and prevents accidental schema changes
+    test('JSON contains all required keys for API compatibility', () {
+      final json = task.toJson();
+      final requiredKeys = ['id', 'title', 'description', 'priority', 'dueDate', 'isCompleted'];
+      for (final key in requiredKeys) {
+        expect(json.containsKey(key), isTrue,
+          reason: 'Missing required key: $key');
+      }
+    });
+    
+    /// Edge case: Test with low priority (index 0) to catch off-by-one errors
+    test('correctly serializes all priority levels', () {
+      for (final priority in Priority.values) {
+        final testTask = makeTask(priority: priority);
+        final json = testTask.toJson();
+        final rebuilt = Task.fromJson(json);
+        expect(rebuilt.priority, equals(priority),
+          reason: 'Failed for priority: $priority');
+      }
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────
   // GROUP 5–11: TaskService Tests
+  // Tests: CRUD operations, filtering, sorting, business logic
+  // Pattern: Each test exercises one specific behavior
   // ─────────────────────────────────────────────────────────────────
   group('TaskService — addTask()', () {
     late TaskService service;
@@ -167,16 +301,28 @@ void main() {
 
     test('throws ArgumentError when title is empty', () {
       expect(
-        () => service.addTask(makeTask(title: '')),
-        throwsA(isA<ArgumentError>()),
+        () => service.addTask(makeTask(title: emptyString)),
+        throwsA(isA<ArgumentError>().having(
+          (e) => e.toString(),
+          'error message',
+          contains('title'),
+        )),
       );
     });
 
     test('throws ArgumentError when title is only whitespace', () {
       expect(
-        () => service.addTask(makeTask(title: '   ')),
+        () => service.addTask(makeTask(title: whitespaceString)),
         throwsA(isA<ArgumentError>()),
       );
+    });
+    
+    /// Edge case: Multiple valid tasks can be added
+    test('successfully adds multiple tasks sequentially', () {
+      service.addTask(makeTask(id: 'a', title: 'Task A'));
+      service.addTask(makeTask(id: 'b', title: 'Task B'));
+      service.addTask(makeTask(id: 'c', title: 'Task C'));
+      expect(service.allTasks.length, equals(3));
     });
   });
 
@@ -195,6 +341,12 @@ void main() {
     test('does nothing silently when id does not exist', () {
       service.deleteTask('nonexistent');
       expect(service.allTasks.length, equals(1));
+    });
+    
+    /// Edge case: Deleting from empty service should not throw
+    test('handles deletion gracefully on empty service', () {
+      final emptyService = TaskService();
+      expect(() => emptyService.deleteTask('any-id'), returnsNormally);
     });
   });
 
@@ -217,7 +369,30 @@ void main() {
     });
 
     test('throws StateError for unknown task id', () {
-      expect(() => service.toggleComplete('ghost'), throwsA(isA<StateError>()));
+      expect(
+        () => service.toggleComplete('ghost'),
+        throwsA(isA<StateError>()),
+      );
+    });
+    
+    /// Advanced pattern: Verify toggle is idempotent over pairs
+    test('returns to original state after two toggles', () {
+      final original = service.allTasks.first.isCompleted;
+      service.toggleComplete('tog1');
+      service.toggleComplete('tog1');
+      expect(service.allTasks.first.isCompleted, equals(original));
+    });
+    
+    /// Edge case: Multiple toggles preserve other fields
+    test('preserves all other fields when toggling completion', () {
+      final before = service.allTasks.first;
+      service.toggleComplete('tog1');
+      final after = service.allTasks.first;
+      
+      expect(after.id, equals(before.id));
+      expect(after.title, equals(before.title));
+      expect(after.priority, equals(before.priority));
+      expect(after.dueDate, equals(before.dueDate));
     });
   });
 
@@ -245,6 +420,14 @@ void main() {
       expect(result.length, equals(1));
       expect(result.first.id, equals('c1'));
     });
+    
+    /// Edge case: Filter with no matches
+    test('returns empty list when no tasks match status', () {
+      final service2 = TaskService();
+      service2.addTask(makeTask(id: 'only', isCompleted: true));
+      final active = service2.getByStatus(completed: false);
+      expect(active, isEmpty);
+    });
   });
 
   group('TaskService — sortByPriority()', () {
@@ -267,6 +450,14 @@ void main() {
       final originalFirst = service.allTasks.first.id;
       service.sortByPriority();
       expect(service.allTasks.first.id, equals(originalFirst));
+    });
+    
+    /// Edge case: Single task sort
+    test('handles single-task list correctly', () {
+      final single = TaskService();
+      single.addTask(makeTask(priority: Priority.medium));
+      final sorted = single.sortByPriority();
+      expect(sorted.length, equals(1));
     });
   });
 
@@ -296,6 +487,19 @@ void main() {
       final originalFirst = service.allTasks.first.id;
       service.sortByDueDate();
       expect(service.allTasks.first.id, equals(originalFirst));
+    });
+    
+    /// Edge case: Tasks with same due date maintain relative order (stable sort)
+    test('maintains relative order for tasks with identical due dates', () {
+      final sameDay = now.add(const Duration(days: 5));
+      final service2 = TaskService();
+      service2.addTask(makeTask(id: 'first', dueDate: sameDay));
+      service2.addTask(makeTask(id: 'second', dueDate: sameDay));
+      
+      final sorted = service2.sortByDueDate();
+      // Both have same date, so original order should be preserved (stable)
+      expect(sorted[0].id, equals('first'));
+      expect(sorted[1].id, equals('second'));
     });
   });
 
@@ -340,6 +544,40 @@ void main() {
         ),
       );
       expect(service.statistics['overdue'], equals(1));
+    });
+    
+    /// Advanced pattern: Statistics are computed live (not cached)
+    /// Verify statistics update as tasks change
+    test('statistics update dynamically as tasks are added', () {
+      expect(service.statistics['total'], equals(0));
+      
+      service.addTask(makeTask(id: 'dyn1'));
+      expect(service.statistics['total'], equals(1));
+      
+      service.addTask(makeTask(id: 'dyn2'));
+      expect(service.statistics['total'], equals(2));
+    });
+    
+    /// Edge case: Comprehensive statistics scenario
+    test('accurately counts mixed task scenarios', () {
+      // Add 3 incomplete, 2 complete
+      service.addTask(makeTask(id: 't1', isCompleted: false));
+      service.addTask(makeTask(id: 't2', isCompleted: false));
+      service.addTask(makeTask(id: 't3', isCompleted: false));
+      service.addTask(makeTask(id: 't4', isCompleted: true));
+      service.addTask(makeTask(id: 't5', isCompleted: true));
+      
+      // Add 1 overdue incomplete
+      service.addTask(makeTask(
+        id: 'overdue',
+        isCompleted: false,
+        dueDate: pastDueDate,
+      ));
+      
+      final stats = service.statistics;
+      expect(stats['total'], equals(6));
+      expect(stats['completed'], equals(2));
+      expect(stats['overdue'], equals(1));
     });
   });
 }
